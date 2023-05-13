@@ -4,6 +4,14 @@ import "time"
 
 type StageStatus string
 
+const (
+	StageStatusSuccess     StageStatus = "success"
+	StageStatusFailure     StageStatus = "failure"
+	StageStatusYield       StageStatus = "yield"
+	StageStatusJobComplete StageStatus = "job_complete"
+	StageStatusJobFailed   StageStatus = "job_failed"
+)
+
 type StageResult struct {
 	Status StageStatus
 	Error  error
@@ -11,6 +19,7 @@ type StageResult struct {
 }
 
 type Stager[S any] interface {
-	Execute(*S) StageResult
-	Rollback(*S) error
+	Name() string
+	Execute(S) StageResult
+	Rollback(S) error
 }
