@@ -18,8 +18,9 @@ type StageResult struct {
 	Yield  time.Duration
 }
 
-type Stager[S any] interface {
+type Stager interface {
 	Name() string
-	Execute(S) StageResult
-	Rollback(S) error
+	Concurrency() int
+	Execute(*Transaction) StageResult
+	Rollback(*Transaction) error
 }

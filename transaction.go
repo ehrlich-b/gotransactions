@@ -1,71 +1,62 @@
 package gotransactions
 
 import (
-	"bytes"
-	"encoding/gob"
-
 	"github.com/google/uuid"
 )
 
-type StateSerializer[S any] interface {
-	SerializeState(*S) ([]byte, error)
-	DeserializeState([]byte) (*S, error)
+type Transaction struct {
+	AutoRollback bool
+	state        map[string]any
+	stages       []Stager
+	saver        StateSaver
+	currentStage int
+	name         string
+	guid         string
 }
 
-// Transactioner is a generic interface for a transaction
-// Transactions contain a list of stages, a state (which can be anything that gob can serialize), and a name
-type Transaction[S any, T Stager[S]] struct {
-	State S
-	Stages []T
-	CurrentStage int
-	Name string
-	guid string
-	rollbacks []func(S) error
+func NewTransaction(name string, stages []Stager, saver StateSaver) *Transaction {
+	return &Transaction{
+		state:        make(map[string]any),
+		stages:       stages,
+		saver:        saver,
+		currentStage: 0,
+		name:         name,
+		guid:         uuid.New().String(),
+	}
 }
 
-// NewTransaction creates a new transaction with the given name and state
-func NewTransaction[S any, T Stager[S]](Name string, State S, Stages []T) *Transaction[S, T] {
-	t := &Transaction[S, T]{State: State, Name: Name, Stages: Stages}
-	t.guid = uuid.New().String()
-
-	return t
-}
-
-func (t *Transaction[S, T]) Run(autoRollback bool) StageResult {
-	if t.CurrentStage >= len(t.Stages) {
-		return StageResult{Status: StageStatusJobComplete}
-	}
-	if t.CurrentStage < 0 {
-		return StageResult{Status: StageStatusJobFailed}
-	}
-
-	var result StageResult
-	stage := t.Stages[t.CurrentStage]
-
-	result = stage.Execute(t.State)
-	t.rollbacks = append(t.rollbacks, stage.Rollback)
-	if result.Status == StageStatusSuccess {
-		t.CurrentStage++
-	}
-
-	if t.CurrentStage == len(t.Stages) {
-		result.Status = StageStatusJobComplete
-	}
-
-	if result.Status == StageStatusFailure && autoRollback {
-		err := t.Rollback()
-		if err != nil {
-			result.Error = err
+func (t *Transaction) Run() StageResult {
+	if t.currentStage >= len(t.stages) {
+		return StageResult{
+			Status: StageStatusJobComplete,
 		}
 	}
 
-	return result
+	result := t.stages[t.currentStage].Execute(t)
+	if result.Status == StageStatusSuccess {
+		t.currentStage++
+	} else if result.Status == StageStatusYield {
+		return result
+	} else if result.Status == StageStatusFailure {
+		if t.AutoRollback {
+			t.Rollback()
+		}
+		return result
+	}
+
+	if t.currentStage >= len(t.stages) {
+		return StageResult{
+			Status: StageStatusJobComplete,
+		}
+	}
+
+	return t.Run()
 }
 
-func (t *Transaction[S, T]) RunAll(autoRollback bool) StageResult {
+func (t *Transaction) RunAll() StageResult {
 	var result StageResult
-	for t.CurrentStage < len(t.Stages) {
-		result = t.Run(autoRollback)
+	for t.currentStage < len(t.stages) {
+		result = t.Run()
 		if result.Status != StageStatusSuccess {
 			break
 		}
@@ -74,39 +65,54 @@ func (t *Transaction[S, T]) RunAll(autoRollback bool) StageResult {
 	return result
 }
 
-func (t *Transaction[S, T]) Rollback() error {
-	if t.CurrentStage < 0 {
+// Return [transaction_name].[stage_name]
+func (t *Transaction) CurrentStageName() string {
+	if t.currentStage < 0 || t.currentStage >= len(t.stages) {
+		return ""
+	}
+
+	return t.name + "." + t.stages[t.currentStage].Name()
+}
+
+func (t *Transaction) CurrentStage() Stager {
+	if t.currentStage < 0 || t.currentStage >= len(t.stages) {
 		return nil
 	}
-	t.CurrentStage = -1
-	for i := len(t.rollbacks) - 1; i >= 0; i-- {
-		err := t.rollbacks[i](t.State)
+
+	return t.stages[t.currentStage]
+}
+
+func (t *Transaction) SaveState() error {
+	return t.saver.SaveState(t)
+}
+
+func (t *Transaction) GetState(stageName, key string) any {
+	return t.state[getConfigKey(stageName, key)]
+}
+
+func (t *Transaction) SetState(stageName, key string, value any) {
+	t.state[getConfigKey(stageName, key)] = value
+}
+
+func getConfigKey(stageName, key string) string {
+	if stageName == "" {
+		return key
+	}
+	return stageName + "." + key
+}
+
+func (t *Transaction) Rollback() error {
+	if t.currentStage <= 0 {
+		return nil
+	}
+
+	for i := t.currentStage; i >= 0; i-- {
+		err := t.stages[i].Rollback(t)
 		if err != nil {
 			return err
 		}
+		t.currentStage--
 	}
 
 	return nil
-}
-
-func (t *Transaction[S, T]) SerializeState() ([]byte, error) {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	err := enc.Encode(t.State)
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-func (t *Transaction[S, T]) DeserializeState(StateBytes []byte) (*S, error) {
-	var state *S
-	dec := gob.NewDecoder(bytes.NewReader(StateBytes))
-	err := dec.Decode(&state)
-	if err != nil {
-		return nil, err
-	}
-
-	return state, nil
 }

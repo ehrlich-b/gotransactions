@@ -1,64 +1,62 @@
 package gotransactions
 
-import "os"
+import (
+	"encoding/gob"
+	"os"
+)
 
-type StateSyncer interface {
-	SaveState(string, []byte) (error)
-	LoadState(string) ([]byte, error)
-	LoadAllStates() (map[string][]byte, error)
+type StateSaver interface {
+	SaveState(*Transaction) error
+	LoadState(*Transaction) error
+	GetAllStateGuids() ([]string, error)
 }
 
-type FileStateSyncer struct {
+type FileStateSaver struct {
 }
 
-func (f *FileStateSyncer) SaveState(guid string, state []byte) error {
-	os.Mkdir("states", 0755)
-	file, err := os.Create("states/" + guid)
+func NewFileStateSaver() *FileStateSaver {
+	return &FileStateSaver{}
+}
+
+func (fss *FileStateSaver) SaveState(t *Transaction) error {
+	os.Mkdir("transactions", 0755)
+	file := "transactions/" + t.guid
+	t.SetState("", "currentStage", t.currentStage)
+	f, err := os.Create(file)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer f.Close()
+	gobenc := gob.NewEncoder(f)
+	err = gobenc.Encode(t.state)
 
-	_, err = file.Write(state)
+	return err
+}
+
+func (fss *FileStateSaver) LoadState(t *Transaction) (error) {
+	file := "transactions/" + t.guid
+	f, err := os.Open(file)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
+	gobdec := gob.NewDecoder(f)
+	err = gobdec.Decode(&t.state)
+	t.currentStage = t.state["currentStage"].(int)
 
-	return nil
+	return err
 }
 
-func (f *FileStateSyncer) LoadState(guid string) ([]byte, error) {
-	file, err := os.Open("states/" + guid)
+func (fss *FileStateSaver) GetAllStateGuids() ([]string, error) {
+	files, err := os.ReadDir("transactions")
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-
-	state := make([]byte, 1024)
-	_, err = file.Read(state)
-	if err != nil {
-		return nil, err
-	}
-
-	return state, nil
-}
-
-func (f *FileStateSyncer) LoadAllStates() (map[string][]byte, error) {
-	states := make(map[string][]byte)
-	files, err := os.ReadDir("states")
-	if err != nil {
-		return nil, err
-	}
-
+	guids := make([]string, 0)
 	for _, file := range files {
-		state, err := f.LoadState(file.Name())
-		if err != nil {
-			return nil, err
-		}
-		states[file.Name()] = state
+		guids = append(guids, file.Name())
 	}
-
-	return states, nil
+	return guids, nil
 }
 
-var _ StateSyncer = (*FileStateSyncer)(nil)
+var _ StateSaver = (*FileStateSaver)(nil)
