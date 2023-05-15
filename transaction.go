@@ -50,13 +50,14 @@ func (t *Transaction) Run() StageResult {
 		}
 	}
 
-	return t.Run()
+	return result
 }
 
 func (t *Transaction) RunAll() StageResult {
 	var result StageResult
 	for t.currentStage < len(t.stages) {
 		result = t.Run()
+		t.SaveState()
 		if result.Status != StageStatusSuccess {
 			break
 		}
@@ -87,7 +88,10 @@ func (t *Transaction) SaveState() error {
 }
 
 func (t *Transaction) GetState(stageName, key string) any {
-	return t.state[getConfigKey(stageName, key)]
+	if v, ok := t.state[getConfigKey(stageName, key)]; ok {
+		return v
+	}
+	return nil
 }
 
 func (t *Transaction) SetState(stageName, key string, value any) {
